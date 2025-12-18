@@ -33,10 +33,10 @@ FolderSync sincroniza con Mega → ¡Siempre tienes el backup más reciente en l
 ## 🚀 **Instalación**
 
 1. Clona el repo:
-   git clone https://github.com/tuusuario/SignalBackupHelper.git
+   git clone https://github.com/royvao/SignalBackupHelper.git
    cd SignalBackupHelper
 
-2. Abre en **Android Studio** (E:\Dev\AndroidProjects\).
+2. Abre en **Android Studio** (\Dev\AndroidProjects\).
 
 3. Sincroniza Gradle → **Run** en tu móvil.
 
