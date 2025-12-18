@@ -26,20 +26,26 @@ import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.lifecycleScope
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.core.content.edit
-import androidx.core.net.toUri
+import java.util.Calendar
+import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity() {
 
@@ -158,7 +164,7 @@ class MainActivity : ComponentActivity() {
                                 label = { Text("Acerca de") },
                                 selected = currentScreen == Screen.ABOUT,
                                 onClick = {
-                                    currentScreen = Screen.ABOUT
+                                    Screen.ABOUT
                                     scope.launch { drawerState.close() }
                                 },
                                 modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
@@ -216,7 +222,12 @@ class MainActivity : ComponentActivity() {
                                     onProcess = { processLatestBackup() }
                                 )
                                 Screen.HISTORY -> HistoryScreen()
-                                Screen.SETTINGS -> SettingsScreen()
+                                Screen.SETTINGS -> SettingsScreen(
+                                    prefs = prefs,
+                                    onScheduleChange = { hour, minute, enabled ->
+                                        scheduleOrCancelBackup(hour, minute, enabled)
+                                    }
+                                )
                                 Screen.HELP -> HelpScreen()
                                 Screen.ABOUT -> AboutScreen()
                             }
@@ -241,65 +252,17 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch {
             try {
-                withContext(Dispatchers.IO) {
-                    val docTree = DocumentFile.fromTreeUri(this@MainActivity, src)
-                        ?: throw IllegalStateException("Origen no es una carpeta válida")
-
-                    if (!docTree.isDirectory) {
-                        throw IllegalStateException("Origen no es una carpeta válida")
+                copyLatestBackup(
+                    src = src,
+                    dst = dst,
+                    onProgressInit = { total ->
+                        bytesTotal.longValue = total
+                        bytesCopied.longValue = 0L
+                    },
+                    onProgress = { copied ->
+                        bytesCopied.longValue = copied
                     }
-
-                    val allFiles = docTree.listFiles()
-
-                    val backupFiles = allFiles.filter { file ->
-                        file.isFile && (file.name?.contains(".backup") == true)
-                    }
-
-                    if (backupFiles.isEmpty()) {
-                        throw IllegalStateException("No se encontraron backups de Signal en el origen")
-                    }
-
-                    val latest = backupFiles.maxByOrNull { it.lastModified() }
-                        ?: throw IllegalStateException("No se pudo determinar el último backup")
-
-                    val destTree = DocumentFile.fromTreeUri(this@MainActivity, dst)
-                        ?: throw IllegalStateException("Destino no es una carpeta válida")
-
-                    if (!destTree.isDirectory) {
-                        throw IllegalStateException("Destino no es una carpeta válida")
-                    }
-
-                    destTree.listFiles().forEach { it.delete() }
-
-                    val totalSize = latest.length()
-                    bytesTotal.longValue = totalSize
-                    bytesCopied.longValue = 0L
-
-                    val input = contentResolver.openInputStream(latest.uri)
-                        ?: throw IllegalStateException("Error abriendo el backup de origen")
-
-                    val newFile = destTree.createFile(
-                        "application/octet-stream",
-                        latest.name ?: "signal_latest.backup"
-                    ) ?: throw IllegalStateException("Error creando archivo en destino")
-
-                    val output = contentResolver.openOutputStream(newFile.uri)
-                        ?: throw IllegalStateException("Error abriendo archivo de destino")
-
-                    input.use { inp ->
-                        output.use { out ->
-                            val buffer = ByteArray(8 * 1024)
-                            while (true) {
-                                val read = inp.read(buffer)
-                                if (read == -1) break
-                                out.write(buffer, 0, read)
-
-                                val current = bytesCopied.longValue + read
-                                bytesCopied.longValue = current
-                            }
-                        }
-                    }
-                }
+                )
 
                 Toast.makeText(
                     this@MainActivity,
@@ -317,6 +280,105 @@ class MainActivity : ComponentActivity() {
                 isProcessing.value = false
             }
         }
+    }
+
+    private suspend fun copyLatestBackup(
+        src: Uri,
+        dst: Uri,
+        onProgressInit: (Long) -> Unit,
+        onProgress: (Long) -> Unit
+    ) = withContext(Dispatchers.IO) {
+        val docTree = DocumentFile.fromTreeUri(this@MainActivity, src)
+            ?: throw IllegalStateException("Origen no es una carpeta válida")
+
+        if (!docTree.isDirectory) {
+            throw IllegalStateException("Origen no es una carpeta válida")
+        }
+
+        val allFiles = docTree.listFiles()
+
+        val backupFiles = allFiles.filter { file ->
+            file.isFile && (file.name?.contains(".backup") == true)
+        }
+
+        if (backupFiles.isEmpty()) {
+            throw IllegalStateException("No se encontraron backups de Signal en el origen")
+        }
+
+        val latest = backupFiles.maxByOrNull { it.lastModified() }
+            ?: throw IllegalStateException("No se pudo determinar el último backup")
+
+        val destTree = DocumentFile.fromTreeUri(this@MainActivity, dst)
+            ?: throw IllegalStateException("Destino no es una carpeta válida")
+
+        if (!destTree.isDirectory) {
+            throw IllegalStateException("Destino no es una carpeta válida")
+        }
+
+        destTree.listFiles().forEach { it.delete() }
+
+        val totalSize = latest.length()
+        onProgressInit(totalSize)
+
+        val input = contentResolver.openInputStream(latest.uri)
+            ?: throw IllegalStateException("Error abriendo el backup de origen")
+
+        val newFile = destTree.createFile(
+            "application/octet-stream",
+            latest.name ?: "signal_latest.backup"
+        ) ?: throw IllegalStateException("Error creando archivo en destino")
+
+        val output = contentResolver.openOutputStream(newFile.uri)
+            ?: throw IllegalStateException("Error abriendo archivo de destino")
+
+        input.use { inp ->
+            output.use { out ->
+                val buffer = ByteArray(8 * 1024)
+                var copied = 0L
+                while (true) {
+                    val read = inp.read(buffer)
+                    if (read == -1) break
+                    out.write(buffer, 0, read)
+                    copied += read
+                    onProgress(copied)
+                }
+            }
+        }
+    }
+
+    private fun scheduleOrCancelBackup(hour: Int, minute: Int, enabled: Boolean) {
+        val workManager = WorkManager.getInstance(applicationContext)
+        val uniqueName = "daily_signal_backup"
+
+        if (!enabled) {
+            workManager.cancelUniqueWork(uniqueName)
+            return
+        }
+
+        val now = Calendar.getInstance()
+        val target = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, hour)
+            set(Calendar.MINUTE, minute)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+            if (before(now)) {
+                add(Calendar.DAY_OF_YEAR, 1)
+            }
+        }
+
+        val delayMillis = target.timeInMillis - now.timeInMillis
+
+        val request = PeriodicWorkRequestBuilder<BackupWorker>(
+            24, TimeUnit.HOURS
+        )
+            .setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
+            .build()
+
+        workManager.enqueueUniquePeriodicWork(
+            uniqueName,
+            ExistingPeriodicWorkPolicy.UPDATE,
+            request
+        )
     }
 }
 
@@ -460,13 +522,99 @@ fun HistoryScreen() {
     }
 }
 
+@SuppressLint("DefaultLocale")
 @Composable
-fun SettingsScreen() {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
+fun SettingsScreen(
+    prefs: SharedPreferences,
+    onScheduleChange: (Int, Int, Boolean) -> Unit
+) {
+    val savedHour = prefs.getInt("schedule_hour", 3)
+    val savedMinute = prefs.getInt("schedule_minute", 0)
+    val savedEnabled = prefs.getBoolean("schedule_enabled", false)
+
+    var hour by rememberSaveable { mutableIntStateOf(savedHour) }
+    var minute by rememberSaveable { mutableIntStateOf(savedMinute) }
+    var enabled by rememberSaveable { mutableStateOf(savedEnabled) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text("Aquí irán opciones de configuración (placeholder).")
+        Text(
+            text = "Configuración de backup automático",
+            style = MaterialTheme.typography.headlineSmall
+        )
+
+        Text(
+            text = "Hora diaria para ejecutar el backup:",
+            style = MaterialTheme.typography.bodyMedium
+        )
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = { hour = (hour + 23) % 24 }
+            ) {
+                Text("-")
+            }
+            Text(
+                text = String.format("%02d", hour),
+                style = MaterialTheme.typography.titleMedium
+            )
+            Button(
+                onClick = { hour = (hour + 1) % 24 }
+            ) {
+                Text("+")
+            }
+
+            Spacer(modifier = Modifier.width(16.dp))
+
+            Button(
+                onClick = { minute = (minute + 55) % 60 }
+            ) {
+                Text("-")
+            }
+            Text(
+                text = String.format("%02d", minute),
+                style = MaterialTheme.typography.titleMedium
+            )
+            Button(
+                onClick = { minute = (minute + 5) % 60 }
+            ) {
+                Text("+")
+            }
+        }
+
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "Backup diario activado",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Switch(
+                checked = enabled,
+                onCheckedChange = { enabled = it }
+            )
+        }
+
+        Button(
+            onClick = {
+                prefs.edit {
+                    putInt("schedule_hour", hour)
+                    putInt("schedule_minute", minute)
+                    putBoolean("schedule_enabled", enabled)
+                }
+                onScheduleChange(hour, minute, enabled)
+            }
+        ) {
+            Text("Guardar configuración")
+        }
     }
 }
 
