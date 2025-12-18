@@ -13,6 +13,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.documentfile.provider.DocumentFile
 
 
 class MainActivity : ComponentActivity() {
@@ -53,8 +54,6 @@ class MainActivity : ComponentActivity() {
             currentPickType = null
         }
 
-
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -79,24 +78,95 @@ class MainActivity : ComponentActivity() {
                     folderPickerLauncher.launch(null)
                 },
                 onProcess = {
-                    if (sourceUri == null || destUri == null) {
-                        Toast.makeText(
-                            this,
-                            "Selecciona origen y destino primero",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    } else {
-                        Toast.makeText(
-                            this,
-                            "Aquí luego haremos el procesamiento",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
+                    processLatestBackup()
                 }
             )
         }
     }
+
+    private fun processLatestBackup() {
+        val src = sourceUri
+        val dst = destUri
+        if (src == null || dst == null) {
+            Toast.makeText(this, "Selecciona origen y destino primero", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        try {
+            // 1) Obtener lista de backups en origen
+            val docTree = DocumentFile.fromTreeUri(this, src)
+            if (docTree == null || !docTree.isDirectory) {
+                Toast.makeText(this, "Origen no es una carpeta válida", Toast.LENGTH_SHORT).show()
+                return
+            }
+
+            val backupFiles = docTree.listFiles()
+                .filter { it.isFile && it.name?.startsWith("signal.") == true && it.name?.endsWith(".backup") == true }
+
+            if (backupFiles.isEmpty()) {
+                Toast.makeText(this, "No se encontraron backups de Signal en el origen", Toast.LENGTH_SHORT).show()
+                return
+            }
+
+            // 2) Seleccionar el más reciente por fecha de modificación
+            val latest = backupFiles.maxByOrNull { it.lastModified() }
+
+            if (latest == null) {
+                Toast.makeText(this, "No se pudo determinar el último backup", Toast.LENGTH_SHORT).show()
+                return
+            }
+
+            // 3) Limpiar carpeta destino
+            val destTree = DocumentFile.fromTreeUri(this, dst)
+            if (destTree == null || !destTree.isDirectory) {
+                Toast.makeText(this, "Destino no es una carpeta válida", Toast.LENGTH_SHORT).show()
+                return
+            }
+
+            destTree.listFiles().forEach { it.delete() }
+
+            // 4) Copiar el último backup al destino
+            val input = contentResolver.openInputStream(latest.uri)
+            if (input == null) {
+                Toast.makeText(this, "Error abriendo el backup de origen", Toast.LENGTH_SHORT).show()
+                return
+            }
+
+            val newFile = destTree.createFile("application/octet-stream", latest.name ?: "signal_latest.backup")
+            if (newFile == null) {
+                Toast.makeText(this, "Error creando archivo en destino", Toast.LENGTH_SHORT).show()
+                input.close()
+                return
+            }
+
+            val output = contentResolver.openOutputStream(newFile.uri)
+            if (output == null) {
+                Toast.makeText(this, "Error abriendo archivo de destino", Toast.LENGTH_SHORT).show()
+                input.close()
+                return
+            }
+
+            input.use { inp ->
+                output.use { out ->
+                    val buffer = ByteArray(8 * 1024)
+                    while (true) {
+                        val read = inp.read(buffer)
+                        if (read == -1) break
+                        out.write(buffer, 0, read)
+                    }
+                }
+            }
+
+            Toast.makeText(this, "Último backup copiado correctamente", Toast.LENGTH_SHORT).show()
+
+        } catch (e: Exception) {
+            Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
 }
+
+
 @Composable
 fun SignalBackupApp(
     sourceUri: Uri?,
