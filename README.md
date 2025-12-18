@@ -19,41 +19,34 @@ App Android desarrollada en **Kotlin + Jetpack Compose** para automatizar la cop
 
 ## 📱 **Uso rápido**
 
-```
 1. Menú → Inicio
 2. "Elegir carpeta de origen" → carpeta Backups de Signal
 3. "Elegir carpeta de destino" → carpeta para FolderSync
 4. "Procesar ahora" → copia el último backup (con barra de progreso)
 5. Menú → Configuración → elige hora + activa "Backup diario" → ¡Listo!
-```
+
 
 ## 🛠 **Flujo automático completo**
 
-```
 Signal crea backups → App copia solo el último → 
 FolderSync sincroniza con Mega → ¡Siempre tienes el backup más reciente en la nube!
-```
 
 ## 📂 **Capturas**
 
 *(Añade screenshots aquí cuando las tengas)*
 
-```
 [Pantalla principal]    [Progreso copia]     [Menú lateral]       [Configuración]
 ┌─────────────────┐    ┌─────────────────┐   ┌─────────────────┐  ┌─────────────────┐
 │ 📁 Origen       │    │ 🔄 Procesando   │   │ ≡ Menú          │  │ ⏰ 03:00 ON     │
 │ 📁 Destino      │    │ Restante: 12GB  │   │ -  Inicio        │  │ [Guardar]       │
 │ [Procesar]      │    │ ○○○○○○○○○○○○   │   │ -  Configuración │  └─────────────────┘
 └─────────────────┘    └─────────────────┘   └─────────────────┘
-```
 
 ## 🚀 **Instalación**
 
 1. Clona el repo:
-   ```
    git clone https://github.com/tuusuario/SignalBackupHelper.git
    cd SignalBackupHelper
-   ```
 
 2. Abre en **Android Studio** (E:\Dev\AndroidProjects\).
 
@@ -69,13 +62,11 @@ FolderSync sincroniza con Mega → ¡Siempre tienes el backup más reciente en l
 
 ## 📋 **Configuración FolderSync (recomendada)**
 
-```
 Local folder: carpeta_destino_seleccionada
 Remote folder: /SignalBackups en Mega
 Direction: To remote folder (solo subida)
 Filters: ^signal.*\.backup$
 Overwrite old files: ✓
-```
 
 ## ⚙️ **Próximas mejoras planeadas**
 
@@ -89,9 +80,7 @@ Overwrite old files: ✓
 
 MIT License - ¡Usa, modifica y comparte libremente!
 
-```
-© 2025 LambdaR. Hecho con ❤️ para automatizar backups de Signal.
-```
+© 2025 LambdaR. Hecho con ❤️(IA) para automatizar backups de Signal.
 
 ---
 
