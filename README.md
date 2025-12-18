@@ -1,4 +1,3 @@
-```markdown
 # Signal Backup Helper
 
 App Android desarrollada en **Kotlin + Jetpack Compose** para automatizar la copia del **último backup de Signal** a una carpeta destino, lista para sincronizar con FolderSync → Mega (o cualquier nube).
@@ -84,5 +83,4 @@ MIT License - ¡Usa, modifica y comparte libremente!
 
 ---
 
-**⭐ Si te sirve, ¡dale una estrella!** 👇
-```
+**⭐ Si te sirve, ¡dale una estrella!** 
