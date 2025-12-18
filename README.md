@@ -30,17 +30,6 @@ App Android desarrollada en **Kotlin + Jetpack Compose** para automatizar la cop
 Signal crea backups → App copia solo el último → 
 FolderSync sincroniza con Mega → ¡Siempre tienes el backup más reciente en la nube!
 
-## 📂 **Capturas**
-
-*(Añade screenshots aquí cuando las tengas)*
-
-[Pantalla principal]    [Progreso copia]     [Menú lateral]       [Configuración]
-┌─────────────────┐    ┌─────────────────┐   ┌─────────────────┐  ┌─────────────────┐
-│ 📁 Origen       │    │ 🔄 Procesando   │   │ ≡ Menú          │  │ ⏰ 03:00 ON     │
-│ 📁 Destino      │    │ Restante: 12GB  │   │ -  Inicio        │  │ [Guardar]       │
-│ [Procesar]      │    │ ○○○○○○○○○○○○   │   │ -  Configuración │  └─────────────────┘
-└─────────────────┘    └─────────────────┘   └─────────────────┘
-
 ## 🚀 **Instalación**
 
 1. Clona el repo:
