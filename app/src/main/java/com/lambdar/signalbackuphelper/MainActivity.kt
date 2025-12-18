@@ -1,5 +1,6 @@
 package com.lambdar.signalbackuphelper
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
@@ -9,12 +10,22 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
-
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import androidx.core.content.edit
+import androidx.core.net.toUri
 
 class MainActivity : ComponentActivity() {
 
@@ -26,28 +37,33 @@ class MainActivity : ComponentActivity() {
     private enum class PickType { SOURCE, DEST }
     private var currentPickType: PickType? = null
 
+    // estado para diálogo y progreso
+    private var isProcessing = mutableStateOf(false)
+    private var bytesTotal = mutableLongStateOf(0L)
+    private var bytesCopied = mutableLongStateOf(0L)
+
     private val folderPickerLauncher =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
             if (uri != null && currentPickType != null) {
                 val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
                         Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                contentResolver.takePersistableUriPermission(uri, flags)
+                try {
+                    contentResolver.takePersistableUriPermission(uri, flags)
+                } catch (_: SecurityException) {
+                    // por si ya teníamos el permiso
+                }
 
                 when (currentPickType) {
                     PickType.SOURCE -> {
                         sourceUri = uri
-                        prefs.edit().putString("sourceUri", uri.toString()).apply()
+                        prefs.edit { putString("sourceUri", uri.toString()) }
                     }
                     PickType.DEST -> {
                         destUri = uri
-                        prefs.edit().putString("destUri", uri.toString()).apply()
+                        prefs.edit { putString("destUri", uri.toString()) }
                     }
-                    null -> {
-                        // No debería pasar porque ya comprobamos antes,
-                        // pero lo dejamos vacío para satisfacer al compilador
-                    }
+                    else -> { /* no-op */ }
                 }
-
             } else {
                 Toast.makeText(this, "Selección cancelada", Toast.LENGTH_SHORT).show()
             }
@@ -62,25 +78,36 @@ class MainActivity : ComponentActivity() {
         // Cargar URIs guardadas
         val sourceStr = prefs.getString("sourceUri", null)
         val destStr = prefs.getString("destUri", null)
-        sourceUri = sourceStr?.let { Uri.parse(it) }
-        destUri = destStr?.let { Uri.parse(it) }
+        sourceUri = sourceStr?.toUri()
+        destUri = destStr?.toUri()
 
         setContent {
-            SignalBackupApp(
-                sourceUri = sourceUri,
-                destUri = destUri,
-                onPickSource = {
-                    currentPickType = PickType.SOURCE
-                    folderPickerLauncher.launch(null)
-                },
-                onPickDest = {
-                    currentPickType = PickType.DEST
-                    folderPickerLauncher.launch(null)
-                },
-                onProcess = {
-                    processLatestBackup()
+            val processing by isProcessing
+            val total by bytesTotal
+            val copied by bytesCopied
+
+            MaterialTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    SignalBackupApp(
+                        sourceUri = sourceUri,
+                        destUri = destUri,
+                        isProcessing = processing,
+                        totalBytes = total,
+                        copiedBytes = copied,
+                        onPickSource = {
+                            currentPickType = PickType.SOURCE
+                            folderPickerLauncher.launch(null)
+                        },
+                        onPickDest = {
+                            currentPickType = PickType.DEST
+                            folderPickerLauncher.launch(null)
+                        },
+                        onProcess = {
+                            processLatestBackup()
+                        }
+                    )
                 }
-            )
+            }
         }
     }
 
@@ -92,85 +119,102 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        try {
-            // 1) Obtener lista de backups en origen
-            val docTree = DocumentFile.fromTreeUri(this, src)
-            if (docTree == null || !docTree.isDirectory) {
-                Toast.makeText(this, "Origen no es una carpeta válida", Toast.LENGTH_SHORT).show()
-                return
-            }
+        isProcessing.value = true
+        bytesTotal.longValue = 0L
+        bytesCopied.longValue = 0L
 
-            val backupFiles = docTree.listFiles()
-                .filter { it.isFile && it.name?.startsWith("signal.") == true && it.name?.endsWith(".backup") == true }
+        lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val docTree = DocumentFile.fromTreeUri(this@MainActivity, src)
+                        ?: throw IllegalStateException("Origen no es una carpeta válida")
 
-            if (backupFiles.isEmpty()) {
-                Toast.makeText(this, "No se encontraron backups de Signal en el origen", Toast.LENGTH_SHORT).show()
-                return
-            }
+                    if (!docTree.isDirectory) {
+                        throw IllegalStateException("Origen no es una carpeta válida")
+                    }
 
-            // 2) Seleccionar el más reciente por fecha de modificación
-            val latest = backupFiles.maxByOrNull { it.lastModified() }
+                    val allFiles = docTree.listFiles()
 
-            if (latest == null) {
-                Toast.makeText(this, "No se pudo determinar el último backup", Toast.LENGTH_SHORT).show()
-                return
-            }
+                    // Filtramos solo archivos que tengan ".backup" en el nombre
+                    val backupFiles = allFiles.filter { file ->
+                        file.isFile && (file.name?.contains(".backup") == true)
+                    }
 
-            // 3) Limpiar carpeta destino
-            val destTree = DocumentFile.fromTreeUri(this, dst)
-            if (destTree == null || !destTree.isDirectory) {
-                Toast.makeText(this, "Destino no es una carpeta válida", Toast.LENGTH_SHORT).show()
-                return
-            }
+                    if (backupFiles.isEmpty()) {
+                        throw IllegalStateException("No se encontraron backups de Signal en el origen")
+                    }
 
-            destTree.listFiles().forEach { it.delete() }
+                    val latest = backupFiles.maxByOrNull { it.lastModified() }
+                        ?: throw IllegalStateException("No se pudo determinar el último backup")
 
-            // 4) Copiar el último backup al destino
-            val input = contentResolver.openInputStream(latest.uri)
-            if (input == null) {
-                Toast.makeText(this, "Error abriendo el backup de origen", Toast.LENGTH_SHORT).show()
-                return
-            }
+                    val destTree = DocumentFile.fromTreeUri(this@MainActivity, dst)
+                        ?: throw IllegalStateException("Destino no es una carpeta válida")
 
-            val newFile = destTree.createFile("application/octet-stream", latest.name ?: "signal_latest.backup")
-            if (newFile == null) {
-                Toast.makeText(this, "Error creando archivo en destino", Toast.LENGTH_SHORT).show()
-                input.close()
-                return
-            }
+                    if (!destTree.isDirectory) {
+                        throw IllegalStateException("Destino no es una carpeta válida")
+                    }
 
-            val output = contentResolver.openOutputStream(newFile.uri)
-            if (output == null) {
-                Toast.makeText(this, "Error abriendo archivo de destino", Toast.LENGTH_SHORT).show()
-                input.close()
-                return
-            }
+                    // borrar destino
+                    destTree.listFiles().forEach { it.delete() }
 
-            input.use { inp ->
-                output.use { out ->
-                    val buffer = ByteArray(8 * 1024)
-                    while (true) {
-                        val read = inp.read(buffer)
-                        if (read == -1) break
-                        out.write(buffer, 0, read)
+                    val totalSize = latest.length()
+                    bytesTotal.longValue = totalSize
+                    bytesCopied.longValue = 0L
+
+                    val input = contentResolver.openInputStream(latest.uri)
+                        ?: throw IllegalStateException("Error abriendo el backup de origen")
+
+                    val newFile = destTree.createFile(
+                        "application/octet-stream",
+                        latest.name ?: "signal_latest.backup"
+                    ) ?: throw IllegalStateException("Error creando archivo en destino")
+
+                    val output = contentResolver.openOutputStream(newFile.uri)
+                        ?: throw IllegalStateException("Error abriendo archivo de destino")
+
+                    input.use { inp ->
+                        output.use { out ->
+                            val buffer = ByteArray(8 * 1024)
+                            while (true) {
+                                val read = inp.read(buffer)
+                                if (read == -1) break
+                                out.write(buffer, 0, read)
+
+                                // actualizar progreso
+                                val current = bytesCopied.longValue + read
+                                bytesCopied.longValue = current
+                            }
+                        }
                     }
                 }
+
+                Toast.makeText(
+                    this@MainActivity,
+                    "Último backup copiado correctamente",
+                    Toast.LENGTH_SHORT
+                ).show()
+
+            } catch (e: Exception) {
+                Toast.makeText(
+                    this@MainActivity,
+                    "Error: ${e.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                isProcessing.value = false
             }
-
-            Toast.makeText(this, "Último backup copiado correctamente", Toast.LENGTH_SHORT).show()
-
-        } catch (e: Exception) {
-            Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
-
 }
 
-
+@SuppressLint("DefaultLocale")
 @Composable
 fun SignalBackupApp(
     sourceUri: Uri?,
     destUri: Uri?,
+    isProcessing: Boolean,
+    totalBytes: Long,
+    copiedBytes: Long,
     onPickSource: () -> Unit,
     onPickDest: () -> Unit,
     onProcess: () -> Unit
@@ -178,44 +222,80 @@ fun SignalBackupApp(
     val sourceText = sourceUri?.toString() ?: "Origen: no seleccionado"
     val destText = destUri?.toString() ?: "Destino: no seleccionado"
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-    ) {
-        Button(
-            onClick = onPickSource,
-            modifier = Modifier.fillMaxWidth()
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
         ) {
-            Text("Seleccionar carpeta de backups (Signal)")
+            Button(
+                onClick = onPickSource,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Seleccionar carpeta de backups (Signal)")
+            }
+
+            Text(
+                text = sourceText,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(
+                onClick = onPickDest,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Seleccionar carpeta destino (último backup)")
+            }
+
+            Text(
+                text = destText,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Button(
+                onClick = onProcess,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isProcessing
+            ) {
+                Text("Procesar ahora")
+            }
         }
 
-        Text(
-            text = sourceText,
-            modifier = Modifier.padding(top = 8.dp)
-        )
+        if (isProcessing) {
+            val progress =
+                if (totalBytes > 0L) copiedBytes.toFloat() / totalBytes.toFloat()
+                else 0f
 
-        Spacer(modifier = Modifier.height(16.dp))
+            val gbRemaining = if (totalBytes > 0L) {
+                val remaining = totalBytes - copiedBytes
+                remaining.toDouble() / (1024.0 * 1024.0 * 1024.0)
+            } else 0.0
 
-        Button(
-            onClick = onPickDest,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Seleccionar carpeta destino (último backup)")
-        }
-
-        Text(
-            text = destText,
-            modifier = Modifier.padding(top = 8.dp)
-        )
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        Button(
-            onClick = onProcess,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Procesar ahora")
+            AlertDialog(
+                onDismissRequest = { /* no permitir cerrar mientras procesa */ },
+                title = { Text("Procesando") },
+                text = {
+                    Column {
+                        CircularProgressIndicator(
+                            progress = progress.coerceIn(0f, 1f),
+                            modifier = Modifier
+                                .padding(bottom = 16.dp)
+                                .size(48.dp)
+                        )
+                        Text(
+                            text = String.format(
+                                "Restante: %.2f GB",
+                                if (gbRemaining < 0) 0.0 else gbRemaining
+                            )
+                        )
+                    }
+                },
+                confirmButton = {}
+            )
         }
     }
 }
