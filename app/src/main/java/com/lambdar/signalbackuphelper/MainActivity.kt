@@ -30,6 +30,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+
 
 class MainActivity : ComponentActivity() {
 
@@ -53,6 +59,22 @@ class MainActivity : ComponentActivity() {
         val destStr = prefs.getString("destUri", null)
         sourceUri = sourceStr?.toUri()
         destUri = destStr?.toUri()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (!granted) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    1001
+                )
+            }
+        }
+
 
         setContent {
             var currentScreen by rememberSaveable { mutableStateOf(Screen.HOME) }
